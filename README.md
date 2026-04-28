@@ -57,8 +57,8 @@ python app.py John Doe
 # Doe
 ```
 
-### AWS Deployment
-Follow `DEPLOYMENT.md` to deploy to Elastic Beanstalk, then paste the live URL into `my_dark_sky_url.txt`.
+### Render Deployment
+Follow `DEPLOYMENT.md` to deploy to Render in 3 clicks. Then paste the live URL into `my_dark_sky_url.txt`.
 
 ### The Core Team
 
