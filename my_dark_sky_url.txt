@@ -1,2 +1,1 @@
-# Replace this line with your deployed AWS URL after running `eb open`
-# Example: http://my-dark-sky-env.eba-xyz.elasticbeanstalk.com
+https://web-production-ee334.up.railway.app/

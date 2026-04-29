@@ -5,10 +5,11 @@ from flask import Flask, render_template, request, jsonify
 
 from config import Config
 from models import db, Location
-from weather_service import geocode, get_weather, get_forecast_strip
+from weather_service import geocode, get_weather, get_forecast_strip, reverse_geocode
 
 app = Flask(__name__)
 app.config.from_object(Config)
+Config.check_secret_key()
 db.init_app(app)
 
 with app.app_context():
@@ -47,14 +48,44 @@ def api_geocode():
         return jsonify({"error": str(e)}), 500
 
 
+def _get_float_param(name: str, bounds: tuple | None = None):
+    raw = request.args.get(name)
+    if raw is None:
+        raise ValueError(f"Missing required parameter: '{name}'")
+    try:
+        val = float(raw)
+    except ValueError:
+        raise ValueError(f"Parameter '{name}' must be a number, got '{raw}'")
+    if bounds is not None:
+        low, high = bounds
+        if not (low <= val <= high):
+            raise ValueError(f"Parameter '{name}' must be between {low} and {high}, got {val}")
+    return val
+
+
+@app.route("/api/reverse_geocode")
+def api_reverse_geocode():
+    try:
+        lat = _get_float_param("lat", (-90, 90))
+        lon = _get_float_param("lon", (-180, 180))
+        data = reverse_geocode(lat, lon)
+        return jsonify(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/weather")
 def api_weather():
     try:
-        lat = float(request.args.get("lat"))
-        lon = float(request.args.get("lon"))
+        lat = _get_float_param("lat", (-90, 90))
+        lon = _get_float_param("lon", (-180, 180))
         date_str = request.args.get("date")
         data = get_weather(lat, lon, date_str)
         return jsonify(data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -62,10 +93,12 @@ def api_weather():
 @app.route("/api/forecast")
 def api_forecast():
     try:
-        lat = float(request.args.get("lat"))
-        lon = float(request.args.get("lon"))
+        lat = _get_float_param("lat", (-90, 90))
+        lon = _get_float_param("lon", (-180, 180))
         data = get_forecast_strip(lat, lon)
         return jsonify({"days": data})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

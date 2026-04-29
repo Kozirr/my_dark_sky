@@ -4,6 +4,29 @@ let currentLon = null;
 let currentLocationName = "Current Location";
 let hourlyChart = null;
 
+const MAX_FUTURE_DAYS = 10;
+
+function getTodayStr() {
+    return new Date().toISOString().split("T")[0];
+}
+
+function getMaxDateStr() {
+    const d = new Date();
+    d.setDate(d.getDate() + MAX_FUTURE_DAYS);
+    return d.toISOString().split("T")[0];
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        return res;
+    } finally {
+        clearTimeout(id);
+    }
+}
+
 // Initialize app
 document.addEventListener("DOMContentLoaded", () => {
     lucide.createIcons();
@@ -49,15 +72,21 @@ function setupEventListeners() {
 
 function initDatePicker() {
     const picker = document.getElementById("datePicker");
-    const today = new Date().toISOString().split("T")[0];
+    const today = getTodayStr();
     picker.value = today;
-    // No min / max allows time travel to any date
+    picker.max = getMaxDateStr();
 }
 
 function shiftDate(days) {
     const picker = document.getElementById("datePicker");
     const d = new Date(picker.value);
     d.setDate(d.getDate() + days);
+
+    const maxDate = new Date(getMaxDateStr() + "T00:00:00");
+    if (d > maxDate) {
+        d.setTime(maxDate.getTime());
+    }
+
     picker.value = d.toISOString().split("T")[0];
     if (currentLat !== null && currentLon !== null) {
         loadWeather(currentLat, currentLon, currentLocationName, picker.value);
@@ -69,11 +98,34 @@ function useMyLocation() {
         showError("Geolocation is not supported by your browser.");
         return;
     }
+
+    if (window.location.protocol === "http:") {
+        showError(
+            "Geolocation requires a secure HTTPS connection. " +
+            "Please search for your city instead."
+        );
+        return;
+    }
+
     showLoading(true);
     navigator.geolocation.getCurrentPosition(
-        (pos) => {
-            currentLocationName = "My Location";
-            loadWeather(pos.coords.latitude, pos.coords.longitude, "My Location");
+        async (pos) => {
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            try {
+                const res = await fetchWithTimeout(
+                    `${API_BASE}/api/reverse_geocode?lat=${lat}&lon=${lon}`
+                );
+                if (!res.ok) throw new Error("Reverse geocoding failed");
+                const data = await res.json();
+                const name = data.name
+                    ? `${data.name}${data.country ? ", " + data.country : ""}`
+                    : "My Location";
+                loadWeather(lat, lon, name);
+            } catch (err) {
+                console.error(err);
+                loadWeather(lat, lon, "My Location");
+            }
         },
         (err) => {
             showLoading(false);
@@ -90,9 +142,15 @@ async function handleSearch(e) {
         return;
     }
     try {
-        const res = await fetch(
+        const res = await fetchWithTimeout(
             `${API_BASE}/api/geocode?q=${encodeURIComponent(q)}`
         );
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            resultsDiv.innerHTML = `<div class="px-4 py-3 text-sm text-red-400">${errData.error || "Search failed. Please try again."}</div>`;
+            resultsDiv.classList.remove("hidden");
+            return;
+        }
         const data = await res.json();
         if (data.results && data.results.length > 0) {
             resultsDiv.innerHTML = data.results
@@ -128,6 +186,13 @@ function selectLocation(lat, lon, name) {
     loadWeather(lat, lon, name);
 }
 
+function hideWeatherCards() {
+    document.getElementById("weatherCard").classList.add("hidden");
+    document.getElementById("chartCard").classList.add("hidden");
+    document.getElementById("detailsCard").classList.add("hidden");
+    document.getElementById("forecastCard").classList.add("hidden");
+}
+
 async function loadWeather(lat, lon, name, date) {
     currentLat = lat;
     currentLon = lon;
@@ -143,17 +208,24 @@ async function loadWeather(lat, lon, name, date) {
         document.getElementById("datePicker").value = date;
     }
 
+    hideWeatherCards();
     showLoading(true);
     showError(false);
 
     try {
         const [weatherRes, forecastRes] = await Promise.all([
-            fetch(`${API_BASE}/api/weather?lat=${lat}&lon=${lon}&date=${date}`),
-            fetch(`${API_BASE}/api/forecast?lat=${lat}&lon=${lon}`),
+            fetchWithTimeout(`${API_BASE}/api/weather?lat=${lat}&lon=${lon}&date=${date}`),
+            fetchWithTimeout(`${API_BASE}/api/forecast?lat=${lat}&lon=${lon}`),
         ]);
 
-        if (!weatherRes.ok) throw new Error("Weather fetch failed");
-        if (!forecastRes.ok) throw new Error("Forecast fetch failed");
+        if (!weatherRes.ok) {
+            const err = await weatherRes.json().catch(() => ({}));
+            throw new Error(err.error || "Weather fetch failed");
+        }
+        if (!forecastRes.ok) {
+            const err = await forecastRes.json().catch(() => ({}));
+            throw new Error(err.error || "Forecast fetch failed");
+        }
 
         const weather = await weatherRes.json();
         const forecast = await forecastRes.json();
@@ -164,6 +236,7 @@ async function loadWeather(lat, lon, name, date) {
     } catch (err) {
         console.error(err);
         showLoading(false);
+        hideWeatherCards();
         showError(err.message || "Failed to load weather data.");
     }
 }
@@ -308,7 +381,8 @@ function renderHourlyChart(hourlyData) {
 
 function renderForecastStrip(days) {
     const container = document.getElementById("forecastStrip");
-    const todayStr = new Date().toISOString().split("T")[0];
+    const todayStr = getTodayStr();
+    const maxDateStr = getMaxDateStr();
 
     container.innerHTML = days
         .slice(0, 14)
@@ -322,8 +396,11 @@ function renderForecastStrip(days) {
                 month: "short",
                 day: "numeric",
             });
+            const isDisabled = day.date > maxDateStr;
+            const opacityClass = isDisabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:bg-slate-700/40 hover:border-slate-600/30";
+            const onclickAttr = isDisabled ? "" : `onclick="selectDate('${day.date}')"`;
             return `
-            <div onclick="selectDate('${day.date}')" class="snap-start min-w-[80px] bg-slate-800/30 hover:bg-slate-700/40 rounded-xl p-3 text-center cursor-pointer transition-colors border border-transparent hover:border-slate-600/30">
+            <div ${onclickAttr} class="snap-start min-w-[80px] bg-slate-800/30 rounded-xl p-3 text-center transition-colors border border-transparent ${opacityClass}">
                 <div class="text-xs font-medium text-slate-300 mb-1">${dayName}</div>
                 <div class="text-[10px] text-slate-500 mb-2">${dateNum}</div>
                 <i data-lucide="${day.weather_icon || "sun"}" class="w-6 h-6 mx-auto mb-2 text-slate-300"></i>

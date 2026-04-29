@@ -96,6 +96,35 @@ def geocode(query: str, count: int = 5):
     ]
 
 
+def reverse_geocode(lat: float, lon: float) -> dict:
+    url = "https://api.bigdatacloud.net/data/reverse-geocode-client"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "localityLanguage": "en",
+    }
+    resp = requests.get(url, params=params, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    city = data.get("city") or data.get("locality") or data.get("principalSubdivision")
+    country = data.get("countryName")
+    admin1 = data.get("principalSubdivision")
+    if not city:
+        return {"name": "My Location", "country": country, "admin1": admin1}
+    return {
+        "name": city,
+        "country": country,
+        "admin1": admin1,
+    }
+
+
+def _validate_coords(lat: float, lon: float):
+    if not (-90 <= lat <= 90):
+        raise ValueError(f"Latitude must be between -90 and 90, got {lat}")
+    if not (-180 <= lon <= 180):
+        raise ValueError(f"Longitude must be between -180 and 180, got {lon}")
+
+
 def _extract_hourly(api_data: dict) -> list[dict]:
     hourly = api_data.get("hourly", {})
     times = hourly.get("time", [])
@@ -128,15 +157,28 @@ def _extract_daily(api_data: dict, date_str: str) -> dict:
 
 
 def get_weather(lat: float, lon: float, date_str: str | None = None) -> dict:
+    _validate_coords(lat, lon)
+
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        target = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD.")
+
+    today = datetime.now().date()
+    max_future = today + timedelta(days=10)
+    if target > max_future:
+        raise ValueError(
+            f"Date {date_str} is more than 10 days in the future. "
+            f"Please select a date on or before {max_future.strftime('%Y-%m-%d')}."
+        )
 
     cached = _get_cached(lat, lon, date_str)
     if cached is not None:
         return cached
 
-    target = datetime.strptime(date_str, "%Y-%m-%d").date()
-    today = datetime.now().date()
     diff_days = (today - target).days
 
     current_vars = (
@@ -238,6 +280,7 @@ def get_weather(lat: float, lon: float, date_str: str | None = None) -> dict:
 
 
 def get_forecast_strip(lat: float, lon: float) -> list[dict]:
+    _validate_coords(lat, lon)
     today = datetime.now().strftime("%Y-%m-%d")
     safe_lat = f"{lat:.4f}".replace(".", "_")
     safe_lon = f"{lon:.4f}".replace(".", "_")
